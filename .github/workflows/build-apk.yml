@@ -15,61 +15,44 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java 11
+      - name: Setup Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '11'
 
-      - name: Setup Flutter 3.24.5
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: '3.27.4'
           channel: stable
           cache: true
 
-      - name: Show environment
+      - name: Show versions
         run: |
-          echo "===== Flutter ====="
           flutter --version
-
-          echo "===== Dart ====="
           dart --version
-
-          echo "===== Java ====="
           java -version
 
-          echo "===== Gradle files ====="
-          ls -la android/gradle/wrapper/
-
-      - name: Clean Flutter
+      - name: Clean
         run: |
           flutter clean
 
-      - name: Repair Pub Cache
-        run: |
-          flutter pub cache repair
-
       - name: Get dependencies
         run: |
-          flutter pub get -v
+          flutter pub get
 
       - name: Build ARM64 APK
         run: |
           flutter build apk \
             --release \
-            --target-platform android-arm64 \
-            -v
+            --target-platform android-arm64
 
-      - name: Prepare APK
+      - name: Rename APK
         run: |
           mkdir -p artifacts
-
-          cp \
-            build/app/outputs/flutter-apk/app-release.apk \
+          cp build/app/outputs/flutter-apk/app-release.apk \
             artifacts/cine-remote-arm64.apk
-
-          ls -lh artifacts/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
