@@ -15,46 +15,66 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Cine Remote currently uses Dart SDK ^3.5.0
-      - name: Setup Flutter
+      - name: Setup Java 11
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Setup Flutter 3.24.5
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.5'
           channel: stable
           cache: true
 
-      # AGP 7.1.2 / Gradle 7.4 works with Java 11
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '11'
-
-      - name: Flutter version
+      - name: Show environment
         run: |
+          echo "===== Flutter ====="
           flutter --version
+
+          echo "===== Dart ====="
           dart --version
+
+          echo "===== Java ====="
           java -version
 
+          echo "===== Gradle files ====="
+          ls -la android/gradle/wrapper/
+
+      - name: Clean Flutter
+        run: |
+          flutter clean
+
+      - name: Repair Pub Cache
+        run: |
+          flutter pub cache repair
+
       - name: Get dependencies
-        run: flutter pub get
+        run: |
+          flutter pub get -v
 
       - name: Build ARM64 APK
         run: |
           flutter build apk \
             --release \
-            --target-platform android-arm64
+            --target-platform android-arm64 \
+            -v
 
-      - name: Rename APK
+      - name: Prepare APK
         run: |
           mkdir -p artifacts
-          cp build/app/outputs/flutter-apk/app-release.apk \
-            artifacts/cine-remote-0.4.0-arm64.apk
+
+          cp \
+            build/app/outputs/flutter-apk/app-release.apk \
+            artifacts/cine-remote-arm64.apk
+
+          ls -lh artifacts/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: cine-remote-0.4.0-arm64
-          path: artifacts/cine-remote-0.4.0-arm64.apk
+          name: cine-remote-arm64
+          path: artifacts/cine-remote-arm64.apk
           if-no-files-found: error
           retention-days: 30
