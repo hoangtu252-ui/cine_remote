@@ -2,25 +2,30 @@ name: Build Cine Remote APK
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+  push:
+    branches:
+      - main
 
 jobs:
-  build:
-    name: Build Android APK
-    runs-on: ubuntu-22.04
+  build-apk:
+    runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout source
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
-        uses: actions/setup-java@v5
+      # 2. Setup Java
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
+          cache: gradle
 
+      # 3. Setup Flutter
+      # Flutter 3.27.x includes Dart 3.6.x,
+      # required by build_runner 2.4.14
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -28,36 +33,56 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Show versions
+      # 4. Show versions
+      - name: Check versions
         run: |
+          echo "===== Flutter ====="
           flutter --version
+
+          echo "===== Dart ====="
           dart --version
+
+          echo "===== Java ====="
           java -version
 
-      - name: Clean
+      # 5. Upgrade Kotlin
+      # Original project uses Kotlin 1.6.10,
+      # which is rejected by Flutter 3.27.x.
+      - name: Upgrade Kotlin version
+        run: |
+          echo "===== Before ====="
+          grep -R "kotlin_version" android/build.gradle || true
+
+          sed -i "s/ext.kotlin_version = '1.6.10'/ext.kotlin_version = '1.7.10'/" android/build.gradle
+
+          echo "===== After ====="
+          grep -R "kotlin_version" android/build.gradle || true
+
+      # 6. Flutter dependencies
+      - name: Flutter Pub Get
         run: |
           flutter clean
-
-      - name: Get dependencies
-        run: |
           flutter pub get
 
+      # 7. Build ARM64 APK
+      # Xiaomi Pad 6S Pro is ARM64.
       - name: Build ARM64 APK
         run: |
           flutter build apk \
             --release \
             --target-platform android-arm64
 
+      # 8. Rename APK
       - name: Rename APK
         run: |
           mkdir -p artifacts
           cp build/app/outputs/flutter-apk/app-release.apk \
-            artifacts/cine-remote-arm64.apk
+             artifacts/cine-remote-arm64.apk
 
+      # 9. Upload APK
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: cine-remote-arm64
           path: artifacts/cine-remote-arm64.apk
           if-no-files-found: error
-          retention-days: 30
