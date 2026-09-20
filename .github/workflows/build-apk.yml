@@ -1,288 +1,353 @@
-name: Build Cine Remote APK
+name: Build Cine Remote APK - Mi Pad 6S Pro
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "lib/**"
+      - "android/**"
+      - "assets/**"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - ".github/workflows/build-mi-pad-6s-pro.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cine-remote-android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.27.4"
+  JAVA_VERSION: "17"
+  ANDROID_COMPILE_SDK: "34"
+  ANDROID_TARGET_SDK: "34"
+  ANDROID_MIN_SDK: "21"
+  APK_NAME: "cine-remote-mi-pad-6s-pro-arm64.apk"
 
 jobs:
-  build:
+  build-apk:
+    name: Build ARM64 release APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      # --------------------------------------------------
-      # 1. Checkout
-      # --------------------------------------------------
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v7
 
-      # --------------------------------------------------
-      # 2. Java 17
-      # --------------------------------------------------
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: gradle
 
-      # --------------------------------------------------
-      # 3. Flutter
-      # --------------------------------------------------
-      - name: Setup Flutter
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.4'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
-      # --------------------------------------------------
-      # 4. Android SDK 34
-      # --------------------------------------------------
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Show tool versions
+        shell: bash
+        run: |
+          set -euxo pipefail
+          flutter --version
+          dart --version
+          java -version
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
 
       - name: Install Android SDK 34
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$SDK_ROOT"
 
-          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager"
-          fi
-
-          if [ ! -x "$SDKMANAGER" ]; then
-            echo "sdkmanager not found"
-            exit 1
+            SDKMANAGER="$(command -v sdkmanager)"
           fi
 
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-
           "$SDKMANAGER" \
             "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0" \
-            "build-tools;30.0.3"
+            "platforms;android-${ANDROID_COMPILE_SDK}" \
+            "build-tools;34.0.0"
 
-      # --------------------------------------------------
-      # 5. Flutter dependencies
-      # --------------------------------------------------
-      - name: Flutter Pub Get
-        run: |
-          flutter clean
-          flutter pub get
-
-      # --------------------------------------------------
-      # 6. Remove Firebase Gradle plugins
-      # --------------------------------------------------
-      - name: Remove Firebase Gradle plugins
+      - name: Patch legacy Android project for current dependencies
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
 
           python3 <<'PY'
           from pathlib import Path
+          import os
+          import re
 
-          p = Path("android/build.gradle")
-          s = p.read_text()
+          compile_sdk = os.environ["ANDROID_COMPILE_SDK"]
+          target_sdk = os.environ["ANDROID_TARGET_SDK"]
+          min_sdk = os.environ["ANDROID_MIN_SDK"]
 
-          # Kotlin
-          s = s.replace(
-              "ext.kotlin_version = '1.6.10'",
-              "ext.kotlin_version = '1.7.10'"
+          # ------------------------------------------------------------------
+          # 1) network_info_plus 6.1.x requires:
+          #    Java 17, AGP >= 8.3.0 and Gradle >= 8.4.
+          #    The upstream project still has AGP 7.1.2 / Gradle 7.4.
+          # ------------------------------------------------------------------
+          wrapper = Path("android/gradle/wrapper/gradle-wrapper.properties")
+          text = wrapper.read_text()
+          text = re.sub(
+              r"distributionUrl=.*gradle-[0-9.]+-(?:all|bin)\.zip",
+              r"distributionUrl=https\://services.gradle.org/distributions/gradle-8.4-all.zip",
+              text,
+          )
+          wrapper.write_text(text)
+
+          root_gradle = Path("android/build.gradle")
+          text = root_gradle.read_text()
+          text = re.sub(
+              r"ext\.kotlin_version\s*=\s*'[^']+'",
+              "ext.kotlin_version = '1.9.22'",
+              text,
+          )
+          text = re.sub(
+              r"classpath\s+'com\.android\.tools\.build:gradle:[^']+'",
+              "classpath 'com.android.tools.build:gradle:8.3.1'",
+              text,
           )
 
-          # Remove Firebase Google Services
-          s = s.replace(
-              "        classpath 'com.google.gms:google-services:4.3.10'\n",
-              ""
+          # Upstream intentionally does not commit Firebase config files.
+          # For a sideload build, remove Gradle-side Firebase/Crashlytics plugins.
+          text = re.sub(
+              r"^\s*classpath\s+'com\.google\.gms:google-services:[^']+'\s*$\n?",
+              "",
+              text,
+              flags=re.MULTILINE,
+          )
+          text = re.sub(
+              r"^\s*classpath\s+'com\.google\.firebase:firebase-crashlytics-gradle:[^']+'\s*$\n?",
+              "",
+              text,
+              flags=re.MULTILINE,
+          )
+          root_gradle.write_text(text)
+
+          app_gradle = Path("android/app/build.gradle")
+          text = app_gradle.read_text()
+
+          text = re.sub(
+              r"^\s*apply plugin:\s*'com\.google\.gms\.google-services'\s*$\n?",
+              "",
+              text,
+              flags=re.MULTILINE,
+          )
+          text = re.sub(
+              r"^\s*apply plugin:\s*'com\.google\.firebase\.crashlytics'\s*$\n?",
+              "",
+              text,
+              flags=re.MULTILINE,
           )
 
-          # Remove Firebase Crashlytics
-          s = s.replace(
-              "        classpath 'com.google.firebase:firebase-crashlytics-gradle:2.8.1'\n",
-              ""
+          # AGP 8 requires an explicit namespace.
+          if not re.search(r"^\s*namespace\s+", text, flags=re.MULTILINE):
+              text = text.replace(
+                  "android {\n",
+                  'android {\n    namespace "com.julianschroden.cine_remote"\n',
+                  1,
+              )
+
+          # Pin Android levels for a stable sideload build.
+          text = re.sub(
+              r"compileSdkVersion\s+flutter\.compileSdkVersion",
+              f"compileSdkVersion {compile_sdk}",
+              text,
+          )
+          text = re.sub(
+              r"minSdkVersion\s+\d+",
+              f"minSdkVersion {min_sdk}",
+              text,
+          )
+          text = re.sub(
+              r"targetSdkVersion\s+flutter\.targetSdkVersion",
+              f"targetSdkVersion {target_sdk}",
+              text,
           )
 
-          p.write_text(s)
-
-          # ------------------------------------------------
-          # app/build.gradle
-          # ------------------------------------------------
-          p = Path("android/app/build.gradle")
-          s = p.read_text()
-
-          # Remove Firebase plugins
-          s = s.replace(
-              "apply plugin: 'com.google.gms.google-services'\n",
-              ""
+          # Java/Kotlin 17 is required by network_info_plus 6.x.
+          text = text.replace(
+              "sourceCompatibility JavaVersion.VERSION_1_8",
+              "sourceCompatibility JavaVersion.VERSION_17",
+          )
+          text = text.replace(
+              "targetCompatibility JavaVersion.VERSION_1_8",
+              "targetCompatibility JavaVersion.VERSION_17",
+          )
+          text = re.sub(
+              r"jvmTarget\s*=\s*['\"]1\.8['\"]",
+              "jvmTarget = '17'",
+              text,
           )
 
-          s = s.replace(
-              "apply plugin: 'com.google.firebase.crashlytics'\n",
-              ""
+          app_gradle.write_text(text)
+
+          # Give Gradle more headroom on GitHub-hosted runner.
+          gradle_props = Path("android/gradle.properties")
+          text = gradle_props.read_text()
+          text = re.sub(
+              r"org\.gradle\.jvmargs=.*",
+              "org.gradle.jvmargs=-Xmx4096M -Dfile.encoding=UTF-8",
+              text,
+          )
+          gradle_props.write_text(text)
+
+          # ------------------------------------------------------------------
+          # 2) Release networking:
+          #    The upstream main manifest has no INTERNET permission.
+          #    EosCineHttp cameras also need local cleartext HTTP to be allowed.
+          # ------------------------------------------------------------------
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text()
+
+          # AGP 8 uses namespace from build.gradle.
+          text = re.sub(
+              r'\s+package="com\.julianschroden\.cine_remote"',
+              "",
+              text,
+              count=1,
           )
 
-          # Force compile SDK 34
-          s = s.replace(
-              "compileSdkVersion flutter.compileSdkVersion",
-              "compileSdkVersion 34"
+          if "android.permission.INTERNET" not in text:
+              text = text.replace(
+                  ">",
+                  '>\n    <uses-permission android:name="android.permission.INTERNET"/>',
+                  1,
+              )
+
+          if "android:usesCleartextTraffic=" not in text:
+              text = text.replace(
+                  'android:icon="@mipmap/ic_launcher">',
+                  'android:icon="@mipmap/ic_launcher"\n'
+                  '        android:usesCleartextTraffic="true">',
+                  1,
+              )
+
+          manifest.write_text(text)
+
+          # ------------------------------------------------------------------
+          # 3) Firebase:
+          #    lib/firebase_options.dart is ignored upstream, so a clean fork
+          #    cannot compile as-is. For this sideload APK we disable Firebase
+          #    initialization/Crashlytics only; camera-control functionality
+          #    remains intact.
+          # ------------------------------------------------------------------
+          deps = Path("lib/dependencies.dart")
+          text = deps.read_text()
+          text = re.sub(
+              r"\n\s*await setupFirebase\(\);\s*\n\s*setupCrashReporting\(\);\s*\n",
+              "\n  // Firebase/Crashlytics disabled for local sideload build.\n",
+              text,
+              count=1,
+          )
+          deps.write_text(text)
+
+          firebase_options = Path("lib/firebase_options.dart")
+          firebase_options.write_text(
+              """// CI-only stub. Firebase initialization is disabled in this build.
+          import 'package:firebase_core/firebase_core.dart' show FirebaseOptions;
+
+          class DefaultFirebaseOptions {
+            static FirebaseOptions get currentPlatform => const FirebaseOptions(
+                  apiKey: 'unused',
+                  appId: '1:1:android:0000000000000000000000',
+                  messagingSenderId: '1',
+                  projectId: 'cine-remote-local',
+                );
+          }
+          """
           )
 
-          # Make target SDK explicit
-          s = s.replace(
-              "targetSdkVersion flutter.targetSdkVersion",
-              "targetSdkVersion 34"
-          )
-
-          p.write_text(s)
+          print("Android project patched successfully.")
           PY
 
-      # --------------------------------------------------
-      # 7. Remove Firebase initialization from dependencies
-      # --------------------------------------------------
-      - name: Disable Firebase runtime initialization
+      - name: Show effective Android configuration
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
+          grep -nE \
+            "kotlin_version|com.android.tools.build:gradle" \
+            android/build.gradle
 
-          if [ -f lib/dependencies.dart ]; then
-            python3 <<'PY'
-          from pathlib import Path
+          grep -nE \
+            "namespace|compileSdkVersion|minSdkVersion|targetSdkVersion|VERSION_17|jvmTarget" \
+            android/app/build.gradle
 
-          p = Path("lib/dependencies.dart")
-          s = p.read_text()
+          grep -nE \
+            "INTERNET|usesCleartextTraffic" \
+            android/app/src/main/AndroidManifest.xml
 
-          # Remove Firebase imports
-          lines = []
-          for line in s.splitlines():
-              if "firebase_core" in line:
-                  continue
-              if "firebase_crashlytics" in line:
-                  continue
-              if "firebase_options.dart" in line:
-                  continue
-              lines.append(line)
+          cat android/gradle/wrapper/gradle-wrapper.properties
 
-          s = "\n".join(lines) + "\n"
-
-          # Remove common Firebase initialization lines
-          s = s.replace(
-              "await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);",
-              ""
-          )
-
-          s = s.replace(
-              "await Firebase.initializeApp();",
-              ""
-          )
-
-          s = s.replace(
-              "Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);",
-              ""
-          )
-
-          # Remove common Crashlytics setup
-          s = s.replace(
-              "FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;",
-              ""
-          )
-
-          p.write_text(s)
-          PY
-          fi
-
-      # --------------------------------------------------
-      # 8. Create Gradle 7.4 wrapper
-      # --------------------------------------------------
-      - name: Create Gradle 7.4 wrapper
+      - name: Get Flutter dependencies
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
+          flutter clean
+          flutter pub get
 
-          cd android
-
-          if [ ! -f gradlew ]; then
-            echo "gradlew missing - creating Gradle 7.4 wrapper"
-
-            cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-7.4-all.zip
-          EOF
-
-            curl -fsSL \
-              https://raw.githubusercontent.com/gradle/gradle/v7.4.2/gradlew \
-              -o gradlew
-
-            chmod +x gradlew
-
-            curl -fsSL \
-              https://raw.githubusercontent.com/gradle/gradle/v7.4.2/gradlew.bat \
-              -o gradlew.bat
-          fi
-
+      - name: Verify Gradle
+        shell: bash
+        working-directory: android
+        run: |
+          set -euxo pipefail
           chmod +x gradlew
-
           ./gradlew --version
 
-      # --------------------------------------------------
-      # 9. Verify configuration
-      # --------------------------------------------------
-      - name: Verify Android configuration
+      - name: Build ARM64 release APK for Mi Pad 6S Pro
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
+          flutter build apk \
+            --release \
+            --target-platform android-arm64 \
+            --split-per-abi
 
-          echo "===== Gradle ====="
-          cd android
-          ./gradlew --version
-
-          echo
-          echo "===== compileSdk ====="
-          grep -n "compileSdkVersion" app/build.gradle || true
-
-          echo
-          echo "===== targetSdk ====="
-          grep -n "targetSdkVersion" app/build.gradle || true
-
-          echo
-          echo "===== Firebase Gradle plugins ====="
-          grep -n "google-services\|crashlytics" build.gradle app/build.gradle || true
-
-      # --------------------------------------------------
-      # 10. Build APK
-      # --------------------------------------------------
-      - name: Build Release APK
+      - name: Collect APK and checksum
+        id: artifact
         shell: bash
         run: |
-          set -e
+          set -euxo pipefail
 
-          cd android
+          mkdir -p dist
 
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            assembleRelease
+          APK_PATH="$(find build/app/outputs/flutter-apk \
+            -maxdepth 1 \
+            -type f \
+            -name '*arm64-v8a*release*.apk' \
+            | head -n 1)"
 
-      # --------------------------------------------------
-      # 11. Find APK
-      # --------------------------------------------------
-      - name: Find APK
-        shell: bash
-        run: |
-          set -e
+          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+            echo "ARM64 release APK was not found."
+            find build/app/outputs -type f -maxdepth 5 -print || true
+            exit 1
+          fi
 
-          echo "===== APK files ====="
-          find android -type f -name "*.apk" -print
+          cp "$APK_PATH" "dist/$APK_NAME"
+          sha256sum "dist/$APK_NAME" | tee "dist/$APK_NAME.sha256"
 
-      # --------------------------------------------------
-      # 12. Upload APK
-      # --------------------------------------------------
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+          ls -lh dist/
+          echo "apk_path=dist/$APK_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Mi Pad 6S Pro APK
+        uses: actions/upload-artifact@v7
         with:
-          name: cine-remote-release
-          path: android/app/build/outputs/apk/release/app-release.apk
+          name: cine-remote-mi-pad-6s-pro-arm64
+          path: |
+            dist/${{ env.APK_NAME }}
+            dist/${{ env.APK_NAME }}.sha256
           if-no-files-found: error
+          retention-days: 14
