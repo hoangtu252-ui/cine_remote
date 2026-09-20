@@ -11,11 +11,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
       # ============================================================
       # 1. Checkout
       # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
+
 
       # ============================================================
       # 2. Java 17
@@ -27,8 +29,9 @@ jobs:
           java-version: '17'
           cache: gradle
 
+
       # ============================================================
-      # 3. Flutter 3.27.4
+      # 3. Flutter
       # ============================================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -37,67 +40,52 @@ jobs:
           channel: stable
           cache: true
 
+
       # ============================================================
-      # 4. Check environment
+      # 4. Environment
       # ============================================================
       - name: Check environment
         run: |
           echo "========================================"
           echo "Flutter"
           echo "========================================"
+
           flutter --version
 
           echo "========================================"
           echo "Dart"
           echo "========================================"
+
           dart --version
 
           echo "========================================"
           echo "Java"
           echo "========================================"
+
           java -version
 
           echo "========================================"
-          echo "Android SDK"
-          echo "========================================"
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-
-          flutter config --list
-
-      # ============================================================
-      # 5. Locate Android SDK tools
-      # ============================================================
-      - name: Locate Android SDK tools
-        run: |
-          echo "========================================"
-          echo "Searching for sdkmanager"
+          echo "ANDROID_HOME"
           echo "========================================"
 
-          SDK_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          echo "$ANDROID_HOME"
 
-          echo "SDK_PATH=$SDK_PATH"
+          echo "========================================"
+          echo "ANDROID_SDK_ROOT"
+          echo "========================================"
 
-          if [ -x "$SDK_PATH/cmdline-tools/latest/bin/sdkmanager" ]; then
-            echo "Found:"
-            echo "$SDK_PATH/cmdline-tools/latest/bin/sdkmanager"
-          elif [ -x "$SDK_PATH/cmdline-tools/bin/sdkmanager" ]; then
-            echo "Found:"
-            echo "$SDK_PATH/cmdline-tools/bin/sdkmanager"
-          elif [ -x "$SDK_PATH/tools/bin/sdkmanager" ]; then
-            echo "Found:"
-            echo "$SDK_PATH/tools/bin/sdkmanager"
-          else
-            echo "sdkmanager not found."
-            find "$SDK_PATH" -name sdkmanager -type f 2>/dev/null || true
-          fi
+          echo "$ANDROID_SDK_ROOT"
+
 
       # ============================================================
-      # 6. Install Android SDK 32
+      # 5. Install Android SDK 32
       # ============================================================
       - name: Install Android SDK 32
         run: |
           SDK_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+
+          echo "Android SDK:"
+          echo "$SDK_PATH"
 
           if [ -x "$SDK_PATH/cmdline-tools/latest/bin/sdkmanager" ]; then
             SDKMANAGER="$SDK_PATH/cmdline-tools/latest/bin/sdkmanager"
@@ -106,11 +94,12 @@ jobs:
           elif [ -x "$SDK_PATH/tools/bin/sdkmanager" ]; then
             SDKMANAGER="$SDK_PATH/tools/bin/sdkmanager"
           else
-            echo "ERROR: sdkmanager was not found."
+            echo "ERROR: sdkmanager not found"
+            find "$SDK_PATH" -name sdkmanager -type f 2>/dev/null || true
             exit 1
           fi
 
-          echo "Using sdkmanager:"
+          echo "Using:"
           echo "$SDKMANAGER"
 
           yes | "$SDKMANAGER" --licenses >/dev/null || true
@@ -120,20 +109,42 @@ jobs:
             "build-tools;32.0.0"
 
           echo "========================================"
-          echo "Android SDK 32 installed"
+          echo "Installed Android platforms"
           echo "========================================"
 
-          ls -la "$SDK_PATH/platforms/android-32" || true
-          ls -la "$SDK_PATH/build-tools/32.0.0" || true
+          ls -la "$SDK_PATH/platforms"
+
+
+      # ============================================================
+      # 6. Inspect Android build configuration
+      # ============================================================
+      - name: Inspect Android configuration
+        run: |
+          echo "========================================"
+          echo "android/app/build.gradle"
+          echo "========================================"
+
+          cat android/app/build.gradle
+
+          echo "========================================"
+          echo "android/build.gradle"
+          echo "========================================"
+
+          cat android/build.gradle
+
+          echo "========================================"
+          echo "android/settings.gradle"
+          echo "========================================"
+
+          cat android/settings.gradle
+
 
       # ============================================================
       # 7. Upgrade Kotlin
       # ============================================================
       - name: Upgrade Kotlin
         run: |
-          echo "========================================"
           echo "Kotlin BEFORE"
-          echo "========================================"
 
           grep -R "kotlin_version" \
             android/build.gradle || true
@@ -142,44 +153,98 @@ jobs:
             "s/ext.kotlin_version = '1.6.10'/ext.kotlin_version = '1.7.10'/" \
             android/build.gradle
 
-          echo "========================================"
           echo "Kotlin AFTER"
-          echo "========================================"
 
           grep -R "kotlin_version" \
             android/build.gradle || true
 
+
       # ============================================================
       # 8. Force compileSdk 32
       # ============================================================
-      - name: Fix compileSdk
+      - name: Force compileSdk 32
         run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("android/app/build.gradle")
+
+          if not path.exists():
+              print("android/app/build.gradle not found")
+              raise SystemExit(1)
+
+          text = path.read_text()
+
+          print("===== compileSdk BEFORE =====")
+
+          for line in text.splitlines():
+              if "compileSdk" in line:
+                  print(line)
+
+          # --------------------------------------------------------
+          # Handle:
+          #
+          # compileSdkVersion 35
+          # compileSdkVersion flutter.compileSdkVersion
+          # compileSdk 35
+          # compileSdk flutter.compileSdkVersion
+          # --------------------------------------------------------
+
+          text = re.sub(
+              r'compileSdkVersion\s+[^\n]+',
+              'compileSdkVersion 32',
+              text
+          )
+
+          text = re.sub(
+              r'compileSdk\s+[^\n]+',
+              'compileSdk 32',
+              text
+          )
+
+          path.write_text(text)
+
+          print("===== compileSdk AFTER =====")
+
+          for line in text.splitlines():
+              if "compileSdk" in line:
+                  print(line)
+          PY
+
           echo "========================================"
-          echo "Android configuration BEFORE"
+          echo "Final Android configuration"
           echo "========================================"
 
           grep -nE \
-            "compileSdk|compileSdkVersion|targetSdk|minSdk" \
+            "compileSdk|compileSdkVersion" \
             android/app/build.gradle || true
 
-          sed -i -E \
-            's/compileSdkVersion [0-9]+/compileSdkVersion 32/g' \
-            android/app/build.gradle
-
-          sed -i -E \
-            's/compileSdk [0-9]+/compileSdk 32/g' \
-            android/app/build.gradle
-
-          echo "========================================"
-          echo "Android configuration AFTER"
-          echo "========================================"
-
-          grep -nE \
-            "compileSdk|compileSdkVersion|targetSdk|minSdk" \
-            android/app/build.gradle || true
 
       # ============================================================
-      # 9. Remove Firebase initialization
+      # 9. Verify no compileSdk 35 remains
+      # ============================================================
+      - name: Verify compileSdk
+        run: |
+          echo "Searching entire Android project..."
+
+          grep -RniE \
+            "compileSdk|compileSdkVersion" \
+            android || true
+
+          echo "========================================"
+          echo "Checking for android-35 references"
+          echo "========================================"
+
+          grep -Rni \
+            "35" \
+            android/app/build.gradle \
+            android/build.gradle \
+            android/settings.gradle || true
+
+
+      # ============================================================
+      # 10. Remove Firebase initialization
       # ============================================================
       - name: Remove Firebase initialization
         run: |
@@ -194,7 +259,6 @@ jobs:
 
           text = path.read_text()
 
-          # Firebase imports
           text = text.replace(
               "import 'package:firebase_core/firebase_core.dart';\n",
               ""
@@ -210,7 +274,6 @@ jobs:
               ""
           )
 
-          # Firebase setup calls
           text = text.replace(
               "  await setupFirebase();\n"
               "  setupCrashReporting();\n\n",
@@ -224,6 +287,7 @@ jobs:
 
           if start != -1:
               end = text.find("\n}\n", start)
+
               if end != -1:
                   text = text[:start] + text[end + 3:]
 
@@ -234,27 +298,19 @@ jobs:
 
           if start != -1:
               end = text.find("\n}\n", start)
+
               if end != -1:
                   text = text[:start] + text[end + 3:]
 
           path.write_text(text)
-
-          print("Firebase initialization removed.")
           PY
 
+
       # ============================================================
-      # 10. Disable Google Services plugin
+      # 11. Disable Google Services
       # ============================================================
       - name: Disable Google Services
         run: |
-          echo "========================================"
-          echo "Google Services BEFORE"
-          echo "========================================"
-
-          grep -RniE \
-            "google-services|com.google.gms" \
-            android || true
-
           sed -i \
             "/com.google.gms.google-services/d" \
             android/app/build.gradle || true
@@ -263,32 +319,33 @@ jobs:
             "/com.google.gms:google-services/d" \
             android/build.gradle || true
 
-          echo "========================================"
-          echo "Google Services AFTER"
-          echo "========================================"
+          echo "Remaining Google Services references:"
 
           grep -RniE \
             "google-services|com.google.gms" \
             android || true
 
+
       # ============================================================
-      # 11. Flutter clean
+      # 12. Flutter clean
       # ============================================================
       - name: Flutter Clean
         run: |
           flutter clean
 
+
       # ============================================================
-      # 12. Flutter dependencies
+      # 13. Pub get
       # ============================================================
       - name: Flutter Pub Get
         run: |
           flutter pub get
 
+
       # ============================================================
-      # 13. Verify configuration
+      # 14. Final verification
       # ============================================================
-      - name: Verify configuration
+      - name: Final verification
         run: |
           echo "========================================"
           echo "compileSdk"
@@ -322,8 +379,9 @@ jobs:
             "google-services|com.google.gms" \
             android || true
 
+
       # ============================================================
-      # 14. Build ARM64 APK
+      # 15. Build ARM64
       # ============================================================
       - name: Build ARM64 APK
         run: |
@@ -331,8 +389,9 @@ jobs:
             --release \
             --target-platform android-arm64
 
+
       # ============================================================
-      # 15. Prepare APK
+      # 16. Prepare APK
       # ============================================================
       - name: Prepare APK
         run: |
@@ -342,15 +401,12 @@ jobs:
             build/app/outputs/flutter-apk/app-release.apk \
             artifacts/cine-remote-arm64.apk
 
-          echo "========================================"
-          echo "APK"
-          echo "========================================"
-
           ls -lh \
             artifacts/cine-remote-arm64.apk
 
+
       # ============================================================
-      # 16. Upload APK
+      # 17. Upload APK
       # ============================================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
