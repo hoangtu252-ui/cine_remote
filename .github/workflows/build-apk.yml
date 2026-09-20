@@ -12,13 +12,13 @@ jobs:
 
     steps:
       # ============================================================
-      # 1. Checkout source
+      # 1. Checkout
       # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
       # ============================================================
-      # 2. Setup Java 17
+      # 2. Java 17
       # ============================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -28,10 +28,7 @@ jobs:
           cache: gradle
 
       # ============================================================
-      # 3. Setup Flutter
-      #
-      # Flutter 3.27.4 = Dart 3.6.x
-      # Required by build_runner 2.4.14
+      # 3. Flutter 3.27.4
       # ============================================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -41,9 +38,9 @@ jobs:
           cache: true
 
       # ============================================================
-      # 4. Check versions
+      # 4. Check environment
       # ============================================================
-      - name: Check versions
+      - name: Check environment
         run: |
           echo "========================================"
           echo "Flutter"
@@ -60,43 +57,82 @@ jobs:
           echo "========================================"
           java -version
 
+          echo "========================================"
+          echo "Android SDK"
+          echo "========================================"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          flutter config --list
+
       # ============================================================
-      # 5. Install Android SDK 32
-      #
-      # Cine Remote uses old AGP 7.1.2.
-      # AGP 7.1.2 should not be used with compileSdk 35.
+      # 5. Locate Android SDK tools
       # ============================================================
-      - name: Setup Android SDK 32
+      - name: Locate Android SDK tools
         run: |
           echo "========================================"
-          echo "Installing Android SDK 32"
+          echo "Searching for sdkmanager"
           echo "========================================"
 
-          yes | sdkmanager --licenses > /dev/null || true
+          SDK_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
 
-          sdkmanager \
+          echo "SDK_PATH=$SDK_PATH"
+
+          if [ -x "$SDK_PATH/cmdline-tools/latest/bin/sdkmanager" ]; then
+            echo "Found:"
+            echo "$SDK_PATH/cmdline-tools/latest/bin/sdkmanager"
+          elif [ -x "$SDK_PATH/cmdline-tools/bin/sdkmanager" ]; then
+            echo "Found:"
+            echo "$SDK_PATH/cmdline-tools/bin/sdkmanager"
+          elif [ -x "$SDK_PATH/tools/bin/sdkmanager" ]; then
+            echo "Found:"
+            echo "$SDK_PATH/tools/bin/sdkmanager"
+          else
+            echo "sdkmanager not found."
+            find "$SDK_PATH" -name sdkmanager -type f 2>/dev/null || true
+          fi
+
+      # ============================================================
+      # 6. Install Android SDK 32
+      # ============================================================
+      - name: Install Android SDK 32
+        run: |
+          SDK_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+
+          if [ -x "$SDK_PATH/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_PATH/cmdline-tools/latest/bin/sdkmanager"
+          elif [ -x "$SDK_PATH/cmdline-tools/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_PATH/cmdline-tools/bin/sdkmanager"
+          elif [ -x "$SDK_PATH/tools/bin/sdkmanager" ]; then
+            SDKMANAGER="$SDK_PATH/tools/bin/sdkmanager"
+          else
+            echo "ERROR: sdkmanager was not found."
+            exit 1
+          fi
+
+          echo "Using sdkmanager:"
+          echo "$SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" \
             "platforms;android-32" \
             "build-tools;32.0.0"
 
           echo "========================================"
-          echo "Installed Android SDK"
+          echo "Android SDK 32 installed"
           echo "========================================"
 
-          sdkmanager --list_installed | grep -E \
-            "platforms;android-32|build-tools;32.0.0" || true
+          ls -la "$SDK_PATH/platforms/android-32" || true
+          ls -la "$SDK_PATH/build-tools/32.0.0" || true
 
       # ============================================================
-      # 6. Upgrade Kotlin
-      #
-      # Original project:
-      # Kotlin 1.6.10
-      #
-      # Flutter 3.27 requires >= 1.7.0
+      # 7. Upgrade Kotlin
       # ============================================================
-      - name: Upgrade Kotlin version
+      - name: Upgrade Kotlin
         run: |
           echo "========================================"
-          echo "Kotlin before"
+          echo "Kotlin BEFORE"
           echo "========================================"
 
           grep -R "kotlin_version" \
@@ -107,19 +143,16 @@ jobs:
             android/build.gradle
 
           echo "========================================"
-          echo "Kotlin after"
+          echo "Kotlin AFTER"
           echo "========================================"
 
           grep -R "kotlin_version" \
             android/build.gradle || true
 
       # ============================================================
-      # 7. Fix compileSdk
-      #
-      # Original project uses old Android Gradle Plugin.
-      # Force compileSdk to Android 32.
+      # 8. Force compileSdk 32
       # ============================================================
-      - name: Fix Android compileSdk
+      - name: Fix compileSdk
         run: |
           echo "========================================"
           echo "Android configuration BEFORE"
@@ -129,15 +162,13 @@ jobs:
             "compileSdk|compileSdkVersion|targetSdk|minSdk" \
             android/app/build.gradle || true
 
-          # Old Flutter project syntax
           sed -i -E \
-            's/compileSdkVersion [0-9]+/compileSdkVersion 32/' \
-            android/app/build.gradle || true
+            's/compileSdkVersion [0-9]+/compileSdkVersion 32/g' \
+            android/app/build.gradle
 
-          # Newer syntax, if present
           sed -i -E \
-            's/compileSdk [0-9]+/compileSdk 32/' \
-            android/app/build.gradle || true
+            's/compileSdk [0-9]+/compileSdk 32/g' \
+            android/app/build.gradle
 
           echo "========================================"
           echo "Android configuration AFTER"
@@ -148,33 +179,22 @@ jobs:
             android/app/build.gradle || true
 
       # ============================================================
-      # 8. Remove Firebase from Dart runtime
-      #
-      # Firebase is not required for camera control.
-      #
-      # This removes:
-      # - firebase_core
-      # - firebase_crashlytics
-      # - firebase_options.dart dependency
+      # 9. Remove Firebase initialization
       # ============================================================
-      - name: Remove Firebase from Dart
+      - name: Remove Firebase initialization
         run: |
-          echo "========================================"
-          echo "Removing Firebase initialization"
-          echo "========================================"
-
           python3 <<'PY'
           from pathlib import Path
 
           path = Path("lib/dependencies.dart")
 
           if not path.exists():
-              print("lib/dependencies.dart not found")
+              print("dependencies.dart not found")
               raise SystemExit(0)
 
           text = path.read_text()
 
-          # Remove Firebase imports
+          # Firebase imports
           text = text.replace(
               "import 'package:firebase_core/firebase_core.dart';\n",
               ""
@@ -190,7 +210,7 @@ jobs:
               ""
           )
 
-          # Remove Firebase setup calls
+          # Firebase setup calls
           text = text.replace(
               "  await setupFirebase();\n"
               "  setupCrashReporting();\n\n",
@@ -204,7 +224,6 @@ jobs:
 
           if start != -1:
               end = text.find("\n}\n", start)
-
               if end != -1:
                   text = text[:start] + text[end + 3:]
 
@@ -215,7 +234,6 @@ jobs:
 
           if start != -1:
               end = text.find("\n}\n", start)
-
               if end != -1:
                   text = text[:start] + text[end + 3:]
 
@@ -224,23 +242,10 @@ jobs:
           print("Firebase initialization removed.")
           PY
 
-          echo "========================================"
-          echo "Remaining Firebase references"
-          echo "========================================"
-
-          grep -nEi \
-            "firebase|Firebase" \
-            lib/dependencies.dart || true
-
       # ============================================================
-      # 9. Disable Google Services Gradle plugin
-      #
-      # Prevents:
-      #
-      # processReleaseGoogleServices
-      # google-services.json missing
+      # 10. Disable Google Services plugin
       # ============================================================
-      - name: Disable Google Services plugin
+      - name: Disable Google Services
         run: |
           echo "========================================"
           echo "Google Services BEFORE"
@@ -250,12 +255,10 @@ jobs:
             "google-services|com.google.gms" \
             android || true
 
-          # Remove plugin application
           sed -i \
             "/com.google.gms.google-services/d" \
             android/app/build.gradle || true
 
-          # Remove Google Services dependency
           sed -i \
             "/com.google.gms:google-services/d" \
             android/build.gradle || true
@@ -269,23 +272,23 @@ jobs:
             android || true
 
       # ============================================================
-      # 10. Flutter clean
+      # 11. Flutter clean
       # ============================================================
       - name: Flutter Clean
         run: |
           flutter clean
 
       # ============================================================
-      # 11. Get dependencies
+      # 12. Flutter dependencies
       # ============================================================
       - name: Flutter Pub Get
         run: |
           flutter pub get
 
       # ============================================================
-      # 12. Verify configuration
+      # 13. Verify configuration
       # ============================================================
-      - name: Verify build configuration
+      - name: Verify configuration
         run: |
           echo "========================================"
           echo "compileSdk"
@@ -304,7 +307,7 @@ jobs:
             android/build.gradle || true
 
           echo "========================================"
-          echo "Firebase references"
+          echo "Firebase"
           echo "========================================"
 
           grep -RniE \
@@ -312,7 +315,7 @@ jobs:
             lib || true
 
           echo "========================================"
-          echo "Google Services references"
+          echo "Google Services"
           echo "========================================"
 
           grep -RniE \
@@ -320,9 +323,7 @@ jobs:
             android || true
 
       # ============================================================
-      # 13. Build ARM64 APK
-      #
-      # Xiaomi Pad 6S Pro = ARM64
+      # 14. Build ARM64 APK
       # ============================================================
       - name: Build ARM64 APK
         run: |
@@ -331,7 +332,7 @@ jobs:
             --target-platform android-arm64
 
       # ============================================================
-      # 14. Prepare APK
+      # 15. Prepare APK
       # ============================================================
       - name: Prepare APK
         run: |
@@ -342,14 +343,14 @@ jobs:
             artifacts/cine-remote-arm64.apk
 
           echo "========================================"
-          echo "APK generated"
+          echo "APK"
           echo "========================================"
 
           ls -lh \
             artifacts/cine-remote-arm64.apk
 
       # ============================================================
-      # 15. Upload APK
+      # 16. Upload APK
       # ============================================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
