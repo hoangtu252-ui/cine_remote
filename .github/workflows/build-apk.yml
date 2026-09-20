@@ -25,7 +25,7 @@ jobs:
           java-version: '17'
 
       # ============================================================
-      # 3. Flutter
+      # 3. Flutter 3.27.4
       # ============================================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -35,41 +35,24 @@ jobs:
           cache: true
 
       # ============================================================
-      # 4. Find Android SDK manager
-      # ============================================================
-      - name: Find sdkmanager
-        shell: bash
-        run: |
-          set -e
-
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "ANDROID_HOME=$ANDROID_HOME"
-
-          if [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            echo "SDKMANAGER=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" >> "$GITHUB_ENV"
-
-          elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager" ]; then
-            echo "SDKMANAGER=$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager" >> "$GITHUB_ENV"
-
-          elif [ -x "$ANDROID_SDK_ROOT/tools/bin/sdkmanager" ]; then
-            echo "SDKMANAGER=$ANDROID_SDK_ROOT/tools/bin/sdkmanager" >> "$GITHUB_ENV"
-
-          else
-            echo "ERROR: sdkmanager not found"
-            find "$ANDROID_SDK_ROOT" -name sdkmanager -type f 2>/dev/null || true
-            exit 1
-          fi
-
-      # ============================================================
-      # 5. Install Android SDK 34
+      # 4. Android SDK 34
       # ============================================================
       - name: Install Android SDK 34
         shell: bash
         run: |
           set -e
 
-          echo "Using SDK manager:"
-          echo "$SDKMANAGER"
+          if [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager" ]; then
+            SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager"
+          else
+            echo "ERROR: sdkmanager not found"
+            find "$ANDROID_SDK_ROOT" -name sdkmanager -type f 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Using: $SDKMANAGER"
 
           yes | "$SDKMANAGER" --licenses >/dev/null || true
 
@@ -77,20 +60,12 @@ jobs:
             "platforms;android-34" \
             "build-tools;34.0.0"
 
-          echo ""
-          echo "Installed platforms:"
-          ls -la "$ANDROID_SDK_ROOT/platforms"
+          test -f "$ANDROID_SDK_ROOT/platforms/android-34/android.jar"
 
-          echo ""
-          echo "Installed build tools:"
-          ls -la "$ANDROID_SDK_ROOT/build-tools"
+          echo "Android SDK 34 installed successfully."
 
       # ============================================================
-      # 6. Flutter pub get
-      #
-      # IMPORTANT:
-      # Flutter may upgrade old Android Gradle files here.
-      # Therefore compileSdk is NOT patched before this step.
+      # 5. Flutter clean / pub get
       # ============================================================
       - name: Flutter clean
         run: flutter clean
@@ -99,9 +74,46 @@ jobs:
         run: flutter pub get
 
       # ============================================================
-      # 7. Force compileSdk = 34 AFTER Flutter pub get
+      # 6. Check Gradle wrapper
+      #
+      # The repository does not contain android/gradlew.
+      # Flutter's Android tooling may generate/update the Gradle files.
       # ============================================================
-      - name: Force Android compileSdk 34
+      - name: Prepare Gradle wrapper
+        shell: bash
+        run: |
+          set -e
+
+          echo "Checking Android directory..."
+
+          ls -la android
+
+          if [ ! -f android/gradlew ]; then
+            echo "android/gradlew is missing."
+            echo "Generating Gradle wrapper..."
+
+            cd android
+
+            gradle wrapper --gradle-version 7.4
+
+            cd ..
+          fi
+
+          if [ ! -f android/gradlew ]; then
+            echo "ERROR: android/gradlew could not be generated."
+            exit 1
+          fi
+
+          chmod +x android/gradlew
+
+          echo ""
+          echo "Gradle wrapper:"
+          ls -lh android/gradlew
+
+      # ============================================================
+      # 7. Force compileSdk 34
+      # ============================================================
+      - name: Force compileSdk 34
         shell: bash
         run: |
           set -e
@@ -113,11 +125,13 @@ jobs:
           path = Path("android/app/build.gradle")
 
           if not path.exists():
-              raise SystemExit("android/app/build.gradle not found")
+              raise SystemExit(
+                  "android/app/build.gradle not found"
+              )
 
           text = path.read_text()
 
-          # Original Cine Remote:
+          # Old Flutter syntax:
           # compileSdkVersion flutter.compileSdkVersion
           text = re.sub(
               r'(?m)^(\s*)compileSdkVersion\s+.*$',
@@ -143,28 +157,28 @@ jobs:
 
           path.write_text(text)
 
-          print("compileSdk patched to 34")
+          print("compileSdk forced to 34.")
           PY
 
           echo ""
-          echo "========== FINAL build.gradle =========="
+          echo "========== compileSdk =========="
 
-          grep -nE "compileSdk|compileSdkVersion" \
+          grep -nE \
+            "compileSdk|compileSdkVersion" \
             android/app/build.gradle
 
           echo ""
-          echo "========== Check for flutter.compileSdkVersion =========="
+          echo "========== Check flutter.compileSdkVersion =========="
 
-          if grep -n "flutter.compileSdkVersion" android/app/build.gradle; then
-            echo "ERROR: flutter.compileSdkVersion still exists!"
+          if grep -n "flutter.compileSdkVersion" \
+            android/app/build.gradle; then
+
+            echo "ERROR: flutter.compileSdkVersion still exists."
             exit 1
           fi
 
-          echo ""
-          echo "compileSdk is correctly fixed to Android 34."
-
       # ============================================================
-      # 8. Remove Firebase initialization from dependencies.dart
+      # 8. Remove Firebase runtime initialization
       # ============================================================
       - name: Remove Firebase runtime initialization
         shell: bash
@@ -178,12 +192,11 @@ jobs:
           path = Path("lib/dependencies.dart")
 
           if not path.exists():
-              print("dependencies.dart not found")
+              print("dependencies.dart not found.")
               raise SystemExit(0)
 
           text = path.read_text()
 
-          # Remove Firebase imports
           text = re.sub(
               r"import 'package:firebase_core/firebase_core\.dart';\n",
               "",
@@ -202,7 +215,6 @@ jobs:
               text
           )
 
-          # Remove setupFirebase()
           text = re.sub(
               r"Future<void> setupFirebase\(\) async \{.*?\n\}\n",
               "",
@@ -210,7 +222,6 @@ jobs:
               flags=re.S
           )
 
-          # Remove setupCrashReporting()
           text = re.sub(
               r"void setupCrashReporting\(\) \{.*?\n\}\n",
               "",
@@ -218,7 +229,6 @@ jobs:
               flags=re.S
           )
 
-          # Remove calls
           text = text.replace(
               "  await setupFirebase();\n",
               ""
@@ -235,9 +245,9 @@ jobs:
           PY
 
       # ============================================================
-      # 9. Disable Google Services Gradle plugin
+      # 9. Disable Firebase Gradle plugins
       # ============================================================
-      - name: Disable Google Services
+      - name: Disable Firebase Gradle plugins
         shell: bash
         run: |
           set -e
@@ -246,7 +256,6 @@ jobs:
           from pathlib import Path
           import re
 
-          # app/build.gradle
           path = Path("android/app/build.gradle")
 
           if path.exists():
@@ -266,7 +275,6 @@ jobs:
 
               path.write_text(text)
 
-          # android/build.gradle
           path = Path("android/build.gradle")
 
           if path.exists():
@@ -286,74 +294,61 @@ jobs:
 
               path.write_text(text)
 
-          print("Google Services / Crashlytics Gradle plugins disabled.")
+          print("Firebase Gradle plugins disabled.")
           PY
 
       # ============================================================
-      # 10. Verify configuration BEFORE Gradle
+      # 10. Verify everything before build
       # ============================================================
-      - name: Verify Android configuration
+      - name: Verify build environment
         shell: bash
         run: |
           set -e
 
-          echo "=========================================="
+          echo "======================================"
           echo "Flutter"
-          echo "=========================================="
+          echo "======================================"
+
           flutter --version
 
           echo ""
-          echo "=========================================="
+          echo "======================================"
           echo "Java"
-          echo "=========================================="
+          echo "======================================"
+
           java -version
 
           echo ""
-          echo "=========================================="
+          echo "======================================"
+          echo "Gradle Wrapper"
+          echo "======================================"
+
+          test -f android/gradlew
+          chmod +x android/gradlew
+
+          android/gradlew --version
+
+          echo ""
+          echo "======================================"
           echo "compileSdk"
-          echo "=========================================="
-          grep -nE "compileSdk|compileSdkVersion" \
+          echo "======================================"
+
+          grep -nE \
+            "compileSdk|compileSdkVersion" \
             android/app/build.gradle
 
           echo ""
-          echo "=========================================="
+          echo "======================================"
           echo "Android SDK 34"
-          echo "=========================================="
+          echo "======================================"
 
           test -f \
             "$ANDROID_SDK_ROOT/platforms/android-34/android.jar"
 
           echo "Android SDK 34: OK"
 
-          echo ""
-          echo "=========================================="
-          echo "Build Tools 34"
-          echo "=========================================="
-
-          test -d \
-            "$ANDROID_SDK_ROOT/build-tools/34.0.0"
-
-          echo "Build Tools 34.0.0: OK"
-
-          echo ""
-          echo "=========================================="
-          echo "Google Services references"
-          echo "=========================================="
-
-          grep -Rni \
-            "google-services\|firebase-crashlytics" \
-            android \
-            --exclude-dir=.gradle \
-            --exclude-dir=build || true
-
       # ============================================================
-      # 11. Gradle build
-      #
-      # IMPORTANT:
-      # Do NOT use "flutter build apk" here.
-      #
-      # flutter build may upgrade old Gradle files again.
-      # We call Gradle directly after compileSdk is fixed.
+      # 11. Build APK
       # ============================================================
       - name: Build Release APK
         shell: bash
@@ -377,23 +372,23 @@ jobs:
         run: |
           set -e
 
-          echo "Searching APK..."
+          APK="android/app/build/outputs/apk/release/app-release.apk"
 
-          find android/app/build/outputs/apk \
-            -type f \
-            -name "*.apk" \
-            -print
-
-          test -f \
-            android/app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK not found."
+            find android/app/build/outputs \
+              -type f \
+              -name "*.apk" \
+              -print || true
+            exit 1
+          fi
 
           echo ""
-          echo "=========================================="
-          echo "APK BUILD SUCCESS"
-          echo "=========================================="
+          echo "======================================"
+          echo "BUILD SUCCESS"
+          echo "======================================"
 
-          ls -lh \
-            android/app/build/outputs/apk/release/app-release.apk
+          ls -lh "$APK"
 
       # ============================================================
       # 13. Upload APK
