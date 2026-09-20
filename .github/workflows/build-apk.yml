@@ -12,13 +12,13 @@ jobs:
 
     steps:
       # ============================================================
-      # 1. Checkout
+      # 1. Checkout source
       # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
       # ============================================================
-      # 2. Java
+      # 2. Setup Java 17
       # ============================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -28,7 +28,10 @@ jobs:
           cache: gradle
 
       # ============================================================
-      # 3. Flutter
+      # 3. Setup Flutter
+      #
+      # Flutter 3.27.4 = Dart 3.6.x
+      # Required by build_runner 2.4.14
       # ============================================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
@@ -42,42 +45,136 @@ jobs:
       # ============================================================
       - name: Check versions
         run: |
-          echo "===== Flutter ====="
+          echo "========================================"
+          echo "Flutter"
+          echo "========================================"
           flutter --version
 
-          echo "===== Dart ====="
+          echo "========================================"
+          echo "Dart"
+          echo "========================================"
           dart --version
 
-          echo "===== Java ====="
+          echo "========================================"
+          echo "Java"
+          echo "========================================"
           java -version
 
       # ============================================================
-      # 5. Upgrade Kotlin
+      # 5. Install Android SDK 32
+      #
+      # Cine Remote uses old AGP 7.1.2.
+      # AGP 7.1.2 should not be used with compileSdk 35.
+      # ============================================================
+      - name: Setup Android SDK 32
+        run: |
+          echo "========================================"
+          echo "Installing Android SDK 32"
+          echo "========================================"
+
+          yes | sdkmanager --licenses > /dev/null || true
+
+          sdkmanager \
+            "platforms;android-32" \
+            "build-tools;32.0.0"
+
+          echo "========================================"
+          echo "Installed Android SDK"
+          echo "========================================"
+
+          sdkmanager --list_installed | grep -E \
+            "platforms;android-32|build-tools;32.0.0" || true
+
+      # ============================================================
+      # 6. Upgrade Kotlin
+      #
+      # Original project:
+      # Kotlin 1.6.10
+      #
+      # Flutter 3.27 requires >= 1.7.0
       # ============================================================
       - name: Upgrade Kotlin version
         run: |
-          echo "===== Kotlin before ====="
-          grep -R "kotlin_version" android/build.gradle || true
+          echo "========================================"
+          echo "Kotlin before"
+          echo "========================================"
+
+          grep -R "kotlin_version" \
+            android/build.gradle || true
 
           sed -i \
             "s/ext.kotlin_version = '1.6.10'/ext.kotlin_version = '1.7.10'/" \
             android/build.gradle
 
-          echo "===== Kotlin after ====="
-          grep -R "kotlin_version" android/build.gradle || true
+          echo "========================================"
+          echo "Kotlin after"
+          echo "========================================"
+
+          grep -R "kotlin_version" \
+            android/build.gradle || true
 
       # ============================================================
-      # 6. Remove Firebase from Dart
+      # 7. Fix compileSdk
+      #
+      # Original project uses old Android Gradle Plugin.
+      # Force compileSdk to Android 32.
+      # ============================================================
+      - name: Fix Android compileSdk
+        run: |
+          echo "========================================"
+          echo "Android configuration BEFORE"
+          echo "========================================"
+
+          grep -nE \
+            "compileSdk|compileSdkVersion|targetSdk|minSdk" \
+            android/app/build.gradle || true
+
+          # Old Flutter project syntax
+          sed -i -E \
+            's/compileSdkVersion [0-9]+/compileSdkVersion 32/' \
+            android/app/build.gradle || true
+
+          # Newer syntax, if present
+          sed -i -E \
+            's/compileSdk [0-9]+/compileSdk 32/' \
+            android/app/build.gradle || true
+
+          echo "========================================"
+          echo "Android configuration AFTER"
+          echo "========================================"
+
+          grep -nE \
+            "compileSdk|compileSdkVersion|targetSdk|minSdk" \
+            android/app/build.gradle || true
+
+      # ============================================================
+      # 8. Remove Firebase from Dart runtime
+      #
+      # Firebase is not required for camera control.
+      #
+      # This removes:
+      # - firebase_core
+      # - firebase_crashlytics
+      # - firebase_options.dart dependency
       # ============================================================
       - name: Remove Firebase from Dart
         run: |
+          echo "========================================"
+          echo "Removing Firebase initialization"
+          echo "========================================"
+
           python3 <<'PY'
           from pathlib import Path
 
           path = Path("lib/dependencies.dart")
+
+          if not path.exists():
+              print("lib/dependencies.dart not found")
+              raise SystemExit(0)
+
           text = path.read_text()
 
-          # Remove imports
+          # Remove Firebase imports
           text = text.replace(
               "import 'package:firebase_core/firebase_core.dart';\n",
               ""
@@ -93,7 +190,7 @@ jobs:
               ""
           )
 
-          # Remove Firebase initialization
+          # Remove Firebase setup calls
           text = text.replace(
               "  await setupFirebase();\n"
               "  setupCrashReporting();\n\n",
@@ -101,88 +198,131 @@ jobs:
           )
 
           # Remove setupFirebase()
-          start = text.find("Future<void> setupFirebase() async {")
+          start = text.find(
+              "Future<void> setupFirebase() async {"
+          )
+
           if start != -1:
               end = text.find("\n}\n", start)
+
               if end != -1:
                   text = text[:start] + text[end + 3:]
 
           # Remove setupCrashReporting()
-          start = text.find("void setupCrashReporting() {")
+          start = text.find(
+              "void setupCrashReporting() {"
+          )
+
           if start != -1:
               end = text.find("\n}\n", start)
+
               if end != -1:
                   text = text[:start] + text[end + 3:]
 
           path.write_text(text)
+
+          print("Firebase initialization removed.")
           PY
 
-          echo "===== Remaining Firebase references ====="
-          grep -nEi "firebase|Firebase" lib/dependencies.dart || true
+          echo "========================================"
+          echo "Remaining Firebase references"
+          echo "========================================"
+
+          grep -nEi \
+            "firebase|Firebase" \
+            lib/dependencies.dart || true
 
       # ============================================================
-      # 7. Disable Google Services Gradle plugin
+      # 9. Disable Google Services Gradle plugin
+      #
+      # Prevents:
+      #
+      # processReleaseGoogleServices
+      # google-services.json missing
       # ============================================================
       - name: Disable Google Services plugin
         run: |
-          echo "===== Before ====="
-
-          echo "--- android/build.gradle ---"
-          grep -nEi "google-services|google.gms" \
-            android/build.gradle || true
-
-          echo "--- android/app/build.gradle ---"
-          grep -nEi "google-services|google.gms" \
-            android/app/build.gradle || true
-
-          # Remove Google Services plugin application
-          sed -i "/com.google.gms.google-services/d" \
-            android/app/build.gradle
-
-          # Remove Google Services dependency
-          sed -i "/com.google.gms:google-services/d" \
-            android/build.gradle
-
-          echo "===== After ====="
-
-          echo "--- android/build.gradle ---"
-          grep -nEi "google-services|google.gms" \
-            android/build.gradle || true
-
-          echo "--- android/app/build.gradle ---"
-          grep -nEi "google-services|google.gms" \
-            android/app/build.gradle || true
-
-      # ============================================================
-      # 8. Flutter dependencies
-      # ============================================================
-      - name: Flutter Clean
-        run: |
-          flutter clean
-
-      - name: Flutter Pub Get
-        run: |
-          flutter pub get
-
-      # ============================================================
-      # 9. Verify Firebase references
-      # ============================================================
-      - name: Verify Firebase is disabled
-        run: |
-          echo "===== Firebase references in lib ====="
+          echo "========================================"
+          echo "Google Services BEFORE"
+          echo "========================================"
 
           grep -RniE \
-            "firebase_core|firebase_crashlytics|FirebaseCrashlytics|Firebase.initializeApp|DefaultFirebaseOptions" \
-            lib || true
+            "google-services|com.google.gms" \
+            android || true
 
-          echo "===== Google Services references ====="
+          # Remove plugin application
+          sed -i \
+            "/com.google.gms.google-services/d" \
+            android/app/build.gradle || true
+
+          # Remove Google Services dependency
+          sed -i \
+            "/com.google.gms:google-services/d" \
+            android/build.gradle || true
+
+          echo "========================================"
+          echo "Google Services AFTER"
+          echo "========================================"
 
           grep -RniE \
             "google-services|com.google.gms" \
             android || true
 
       # ============================================================
-      # 10. Build ARM64 APK
+      # 10. Flutter clean
+      # ============================================================
+      - name: Flutter Clean
+        run: |
+          flutter clean
+
+      # ============================================================
+      # 11. Get dependencies
+      # ============================================================
+      - name: Flutter Pub Get
+        run: |
+          flutter pub get
+
+      # ============================================================
+      # 12. Verify configuration
+      # ============================================================
+      - name: Verify build configuration
+        run: |
+          echo "========================================"
+          echo "compileSdk"
+          echo "========================================"
+
+          grep -nE \
+            "compileSdk|compileSdkVersion" \
+            android/app/build.gradle || true
+
+          echo "========================================"
+          echo "Kotlin"
+          echo "========================================"
+
+          grep -n \
+            "kotlin_version" \
+            android/build.gradle || true
+
+          echo "========================================"
+          echo "Firebase references"
+          echo "========================================"
+
+          grep -RniE \
+            "firebase_core|firebase_crashlytics|FirebaseCrashlytics|Firebase.initializeApp|DefaultFirebaseOptions" \
+            lib || true
+
+          echo "========================================"
+          echo "Google Services references"
+          echo "========================================"
+
+          grep -RniE \
+            "google-services|com.google.gms" \
+            android || true
+
+      # ============================================================
+      # 13. Build ARM64 APK
+      #
+      # Xiaomi Pad 6S Pro = ARM64
       # ============================================================
       - name: Build ARM64 APK
         run: |
@@ -191,7 +331,7 @@ jobs:
             --target-platform android-arm64
 
       # ============================================================
-      # 11. Prepare APK
+      # 14. Prepare APK
       # ============================================================
       - name: Prepare APK
         run: |
@@ -201,11 +341,15 @@ jobs:
             build/app/outputs/flutter-apk/app-release.apk \
             artifacts/cine-remote-arm64.apk
 
-          echo "===== APK ====="
-          ls -lh artifacts/cine-remote-arm64.apk
+          echo "========================================"
+          echo "APK generated"
+          echo "========================================"
+
+          ls -lh \
+            artifacts/cine-remote-arm64.apk
 
       # ============================================================
-      # 12. Upload APK
+      # 15. Upload APK
       # ============================================================
       - name: Upload APK
         uses: actions/upload-artifact@v4
