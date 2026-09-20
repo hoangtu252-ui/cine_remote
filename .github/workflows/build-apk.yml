@@ -1,0 +1,60 @@
+name: Build Cine Remote APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Cine Remote currently uses Dart SDK ^3.5.0
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: stable
+          cache: true
+
+      # AGP 7.1.2 / Gradle 7.4 works with Java 11
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Flutter version
+        run: |
+          flutter --version
+          dart --version
+          java -version
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build ARM64 APK
+        run: |
+          flutter build apk \
+            --release \
+            --target-platform android-arm64
+
+      - name: Rename APK
+        run: |
+          mkdir -p artifacts
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            artifacts/cine-remote-0.4.0-arm64.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cine-remote-0.4.0-arm64
+          path: artifacts/cine-remote-0.4.0-arm64.apk
+          if-no-files-found: error
+          retention-days: 30
