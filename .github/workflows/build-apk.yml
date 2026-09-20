@@ -8,25 +8,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ============================================================
+      # --------------------------------------------------
       # 1. Checkout
-      # ============================================================
+      # --------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ============================================================
+      # --------------------------------------------------
       # 2. Java 17
-      # ============================================================
+      # --------------------------------------------------
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # ============================================================
-      # 3. Flutter 3.27.4
-      # ============================================================
+      # --------------------------------------------------
+      # 3. Flutter
+      # --------------------------------------------------
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -34,322 +33,227 @@ jobs:
           channel: stable
           cache: true
 
-      # ============================================================
+      # --------------------------------------------------
       # 4. Android SDK 34
-      # ============================================================
+      # --------------------------------------------------
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Install Android SDK 34
         shell: bash
         run: |
           set -e
 
-          if [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager" ]; then
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
             SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager"
-          else
-            echo "ERROR: sdkmanager not found"
-            find "$ANDROID_SDK_ROOT" -name sdkmanager -type f 2>/dev/null || true
-            exit 1
           fi
 
-          echo "Using: $SDKMANAGER"
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "sdkmanager not found"
+            exit 1
+          fi
 
           yes | "$SDKMANAGER" --licenses >/dev/null || true
 
           "$SDKMANAGER" \
+            "platform-tools" \
             "platforms;android-34" \
-            "build-tools;34.0.0"
+            "build-tools;34.0.0" \
+            "build-tools;30.0.3"
 
-          test -f "$ANDROID_SDK_ROOT/platforms/android-34/android.jar"
-
-          echo "Android SDK 34 installed successfully."
-
-      # ============================================================
-      # 5. Flutter clean / pub get
-      # ============================================================
-      - name: Flutter clean
-        run: flutter clean
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      # ============================================================
-      # 6. Check Gradle wrapper
-      #
-      # The repository does not contain android/gradlew.
-      # Flutter's Android tooling may generate/update the Gradle files.
-      # ============================================================
-      - name: Prepare Gradle wrapper
-        shell: bash
+      # --------------------------------------------------
+      # 5. Flutter dependencies
+      # --------------------------------------------------
+      - name: Flutter Pub Get
         run: |
-          set -e
+          flutter clean
+          flutter pub get
 
-          echo "Checking Android directory..."
-
-          ls -la android
-
-          if [ ! -f android/gradlew ]; then
-            echo "android/gradlew is missing."
-            echo "Generating Gradle wrapper..."
-
-            cd android
-
-            gradle wrapper --gradle-version 7.4
-
-            cd ..
-          fi
-
-          if [ ! -f android/gradlew ]; then
-            echo "ERROR: android/gradlew could not be generated."
-            exit 1
-          fi
-
-          chmod +x android/gradlew
-
-          echo ""
-          echo "Gradle wrapper:"
-          ls -lh android/gradlew
-
-      # ============================================================
-      # 7. Force compileSdk 34
-      # ============================================================
-      - name: Force compileSdk 34
+      # --------------------------------------------------
+      # 6. Remove Firebase Gradle plugins
+      # --------------------------------------------------
+      - name: Remove Firebase Gradle plugins
         shell: bash
         run: |
           set -e
 
           python3 <<'PY'
           from pathlib import Path
-          import re
 
-          path = Path("android/app/build.gradle")
+          p = Path("android/build.gradle")
+          s = p.read_text()
 
-          if not path.exists():
-              raise SystemExit(
-                  "android/app/build.gradle not found"
-              )
-
-          text = path.read_text()
-
-          # Old Flutter syntax:
-          # compileSdkVersion flutter.compileSdkVersion
-          text = re.sub(
-              r'(?m)^(\s*)compileSdkVersion\s+.*$',
-              r'\g<1>compileSdkVersion 34',
-              text
+          # Kotlin
+          s = s.replace(
+              "ext.kotlin_version = '1.6.10'",
+              "ext.kotlin_version = '1.7.10'"
           )
 
-          # New Gradle syntax:
-          # compileSdk = flutter.compileSdkVersion
-          text = re.sub(
-              r'(?m)^(\s*)compileSdk\s*=\s*.*$',
-              r'\g<1>compileSdk = 34',
-              text
-          )
-
-          # New Gradle syntax:
-          # compileSdk 35
-          text = re.sub(
-              r'(?m)^(\s*)compileSdk\s+\d+\s*$',
-              r'\g<1>compileSdk 34',
-              text
-          )
-
-          path.write_text(text)
-
-          print("compileSdk forced to 34.")
-          PY
-
-          echo ""
-          echo "========== compileSdk =========="
-
-          grep -nE \
-            "compileSdk|compileSdkVersion" \
-            android/app/build.gradle
-
-          echo ""
-          echo "========== Check flutter.compileSdkVersion =========="
-
-          if grep -n "flutter.compileSdkVersion" \
-            android/app/build.gradle; then
-
-            echo "ERROR: flutter.compileSdkVersion still exists."
-            exit 1
-          fi
-
-      # ============================================================
-      # 8. Remove Firebase runtime initialization
-      # ============================================================
-      - name: Remove Firebase runtime initialization
-        shell: bash
-        run: |
-          set -e
-
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          path = Path("lib/dependencies.dart")
-
-          if not path.exists():
-              print("dependencies.dart not found.")
-              raise SystemExit(0)
-
-          text = path.read_text()
-
-          text = re.sub(
-              r"import 'package:firebase_core/firebase_core\.dart';\n",
-              "",
-              text
-          )
-
-          text = re.sub(
-              r"import 'package:firebase_crashlytics/firebase_crashlytics\.dart';\n",
-              "",
-              text
-          )
-
-          text = re.sub(
-              r"import 'firebase_options\.dart';\n",
-              "",
-              text
-          )
-
-          text = re.sub(
-              r"Future<void> setupFirebase\(\) async \{.*?\n\}\n",
-              "",
-              text,
-              flags=re.S
-          )
-
-          text = re.sub(
-              r"void setupCrashReporting\(\) \{.*?\n\}\n",
-              "",
-              text,
-              flags=re.S
-          )
-
-          text = text.replace(
-              "  await setupFirebase();\n",
+          # Remove Firebase Google Services
+          s = s.replace(
+              "        classpath 'com.google.gms:google-services:4.3.10'\n",
               ""
           )
 
-          text = text.replace(
-              "  setupCrashReporting();\n",
+          # Remove Firebase Crashlytics
+          s = s.replace(
+              "        classpath 'com.google.firebase:firebase-crashlytics-gradle:2.8.1'\n",
               ""
           )
 
-          path.write_text(text)
+          p.write_text(s)
 
-          print("Firebase runtime initialization removed.")
+          # ------------------------------------------------
+          # app/build.gradle
+          # ------------------------------------------------
+          p = Path("android/app/build.gradle")
+          s = p.read_text()
+
+          # Remove Firebase plugins
+          s = s.replace(
+              "apply plugin: 'com.google.gms.google-services'\n",
+              ""
+          )
+
+          s = s.replace(
+              "apply plugin: 'com.google.firebase.crashlytics'\n",
+              ""
+          )
+
+          # Force compile SDK 34
+          s = s.replace(
+              "compileSdkVersion flutter.compileSdkVersion",
+              "compileSdkVersion 34"
+          )
+
+          # Make target SDK explicit
+          s = s.replace(
+              "targetSdkVersion flutter.targetSdkVersion",
+              "targetSdkVersion 34"
+          )
+
+          p.write_text(s)
           PY
 
-      # ============================================================
-      # 9. Disable Firebase Gradle plugins
-      # ============================================================
-      - name: Disable Firebase Gradle plugins
+      # --------------------------------------------------
+      # 7. Remove Firebase initialization from dependencies
+      # --------------------------------------------------
+      - name: Disable Firebase runtime initialization
         shell: bash
         run: |
           set -e
 
-          python3 <<'PY'
+          if [ -f lib/dependencies.dart ]; then
+            python3 <<'PY'
           from pathlib import Path
-          import re
 
-          path = Path("android/app/build.gradle")
+          p = Path("lib/dependencies.dart")
+          s = p.read_text()
 
-          if path.exists():
-              text = path.read_text()
+          # Remove Firebase imports
+          lines = []
+          for line in s.splitlines():
+              if "firebase_core" in line:
+                  continue
+              if "firebase_crashlytics" in line:
+                  continue
+              if "firebase_options.dart" in line:
+                  continue
+              lines.append(line)
 
-              text = re.sub(
-                  r"(?m)^\s*apply plugin:\s*['\"]com\.google\.gms\.google-services['\"]\s*\n?",
-                  "",
-                  text
-              )
+          s = "\n".join(lines) + "\n"
 
-              text = re.sub(
-                  r"(?m)^\s*apply plugin:\s*['\"]com\.google\.firebase\.crashlytics['\"]\s*\n?",
-                  "",
-                  text
-              )
+          # Remove common Firebase initialization lines
+          s = s.replace(
+              "await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);",
+              ""
+          )
 
-              path.write_text(text)
+          s = s.replace(
+              "await Firebase.initializeApp();",
+              ""
+          )
 
-          path = Path("android/build.gradle")
+          s = s.replace(
+              "Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);",
+              ""
+          )
 
-          if path.exists():
-              text = path.read_text()
+          # Remove common Crashlytics setup
+          s = s.replace(
+              "FlutterError.onError = FirebaseCrashlytics.instance.recordFlutterFatalError;",
+              ""
+          )
 
-              text = re.sub(
-                  r"(?m)^\s*classpath\s+['\"]com\.google\.gms:google-services:[^'\"]+['\"]\s*\n?",
-                  "",
-                  text
-              )
-
-              text = re.sub(
-                  r"(?m)^\s*classpath\s+['\"]com\.google\.firebase:firebase-crashlytics-gradle:[^'\"]+['\"]\s*\n?",
-                  "",
-                  text
-              )
-
-              path.write_text(text)
-
-          print("Firebase Gradle plugins disabled.")
+          p.write_text(s)
           PY
+          fi
 
-      # ============================================================
-      # 10. Verify everything before build
-      # ============================================================
-      - name: Verify build environment
+      # --------------------------------------------------
+      # 8. Create Gradle 7.4 wrapper
+      # --------------------------------------------------
+      - name: Create Gradle 7.4 wrapper
         shell: bash
         run: |
           set -e
 
-          echo "======================================"
-          echo "Flutter"
-          echo "======================================"
+          cd android
 
-          flutter --version
+          if [ ! -f gradlew ]; then
+            echo "gradlew missing - creating Gradle 7.4 wrapper"
 
-          echo ""
-          echo "======================================"
-          echo "Java"
-          echo "======================================"
+            cat > gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-7.4-all.zip
+          EOF
 
-          java -version
+            curl -fsSL \
+              https://raw.githubusercontent.com/gradle/gradle/v7.4.2/gradlew \
+              -o gradlew
 
-          echo ""
-          echo "======================================"
-          echo "Gradle Wrapper"
-          echo "======================================"
+            chmod +x gradlew
 
-          test -f android/gradlew
-          chmod +x android/gradlew
+            curl -fsSL \
+              https://raw.githubusercontent.com/gradle/gradle/v7.4.2/gradlew.bat \
+              -o gradlew.bat
+          fi
 
-          android/gradlew --version
+          chmod +x gradlew
 
-          echo ""
-          echo "======================================"
-          echo "compileSdk"
-          echo "======================================"
+          ./gradlew --version
 
-          grep -nE \
-            "compileSdk|compileSdkVersion" \
-            android/app/build.gradle
+      # --------------------------------------------------
+      # 9. Verify configuration
+      # --------------------------------------------------
+      - name: Verify Android configuration
+        shell: bash
+        run: |
+          set -e
 
-          echo ""
-          echo "======================================"
-          echo "Android SDK 34"
-          echo "======================================"
+          echo "===== Gradle ====="
+          cd android
+          ./gradlew --version
 
-          test -f \
-            "$ANDROID_SDK_ROOT/platforms/android-34/android.jar"
+          echo
+          echo "===== compileSdk ====="
+          grep -n "compileSdkVersion" app/build.gradle || true
 
-          echo "Android SDK 34: OK"
+          echo
+          echo "===== targetSdk ====="
+          grep -n "targetSdkVersion" app/build.gradle || true
 
-      # ============================================================
-      # 11. Build APK
-      # ============================================================
+          echo
+          echo "===== Firebase Gradle plugins ====="
+          grep -n "google-services\|crashlytics" build.gradle app/build.gradle || true
+
+      # --------------------------------------------------
+      # 10. Build APK
+      # --------------------------------------------------
       - name: Build Release APK
         shell: bash
         run: |
@@ -357,45 +261,28 @@ jobs:
 
           cd android
 
-          chmod +x gradlew
-
           ./gradlew \
             --no-daemon \
             --stacktrace \
             assembleRelease
 
-      # ============================================================
-      # 12. Verify APK
-      # ============================================================
-      - name: Verify APK
+      # --------------------------------------------------
+      # 11. Find APK
+      # --------------------------------------------------
+      - name: Find APK
         shell: bash
         run: |
           set -e
 
-          APK="android/app/build/outputs/apk/release/app-release.apk"
+          echo "===== APK files ====="
+          find android -type f -name "*.apk" -print
 
-          if [ ! -f "$APK" ]; then
-            echo "ERROR: APK not found."
-            find android/app/build/outputs \
-              -type f \
-              -name "*.apk" \
-              -print || true
-            exit 1
-          fi
-
-          echo ""
-          echo "======================================"
-          echo "BUILD SUCCESS"
-          echo "======================================"
-
-          ls -lh "$APK"
-
-      # ============================================================
-      # 13. Upload APK
-      # ============================================================
+      # --------------------------------------------------
+      # 12. Upload APK
+      # --------------------------------------------------
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: cine-remote-arm64
+          name: cine-remote-release
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
