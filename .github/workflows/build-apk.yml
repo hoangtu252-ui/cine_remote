@@ -43,7 +43,11 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: gradle
+
+      - name: Set up Gradle 8.4
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.4"
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
@@ -222,10 +226,11 @@ jobs:
           )
 
           if "android.permission.INTERNET" not in text:
-              text = text.replace(
-                  ">",
-                  '>\n    <uses-permission android:name="android.permission.INTERNET"/>',
-                  1,
+              text = re.sub(
+                  r"(<manifest\\b[^>]*>)",
+                  r'\\1\n    <uses-permission android:name="android.permission.INTERNET"/>',
+                  text,
+                  count=1,
               )
 
           if "android:usesCleartextTraffic=" not in text:
@@ -292,6 +297,29 @@ jobs:
 
           cat android/gradle/wrapper/gradle-wrapper.properties
 
+      - name: Create Android local.properties
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$SDK_ROOT"
+
+          FLUTTER_BIN="$(command -v flutter)"
+          FLUTTER_BIN_REAL="$(readlink -f "$FLUTTER_BIN")"
+          FLUTTER_ROOT="$(cd "$(dirname "$FLUTTER_BIN_REAL")/.." && pwd)"
+
+          cat > android/local.properties <<EOF
+          sdk.dir=$SDK_ROOT
+          flutter.sdk=$FLUTTER_ROOT
+          flutter.buildMode=release
+          flutter.versionName=1.0.0
+          flutter.versionCode=1
+          EOF
+
+          echo "Created android/local.properties"
+          sed -E 's#^(sdk.dir|flutter.sdk)=.*#\1=<configured>#' android/local.properties
+
       - name: Get Flutter dependencies
         shell: bash
         run: |
@@ -299,12 +327,35 @@ jobs:
           flutter clean
           flutter pub get
 
-      - name: Verify Gradle
+      - name: Generate missing Gradle Wrapper
         shell: bash
         working-directory: android
         run: |
           set -euxo pipefail
+
+          echo "Before generating wrapper:"
+          find . -maxdepth 3 -type f \( -name 'gradlew' -o -name 'gradlew.bat' -o -name 'gradle-wrapper.jar' -o -name 'gradle-wrapper.properties' \) -print || true
+
+          # The upstream Flutter project does not ship gradlew/gradlew.bat.
+          # setup-gradle has already placed Gradle 8.4 on PATH, so use it
+          # once to generate a complete wrapper for the patched Android project.
+          gradle wrapper             --gradle-version 8.4             --distribution-type all             --no-daemon             --stacktrace
+
+          test -f gradlew
+          test -f gradlew.bat
+          test -f gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.properties
+
           chmod +x gradlew
+
+          echo "Generated wrapper:"
+          ls -l gradlew gradlew.bat gradle/wrapper/
+
+      - name: Verify Gradle Wrapper
+        shell: bash
+        working-directory: android
+        run: |
+          set -euxo pipefail
           ./gradlew --version
 
       - name: Build ARM64 release APK for Mi Pad 6S Pro
